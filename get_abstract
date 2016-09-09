@@ -1,0 +1,133 @@
+import re
+from urllib.parse import urljoin
+import time
+from selenium import webdriver
+import os
+import requests
+from bs4 import BeautifulSoup
+import json
+from datetime import date
+
+class AbstractDownloader(object):
+	#define global constants
+	def __init__(self):
+		self.driver = webdriver.PhantomJS()
+		self.superconduct_url = 'http://arxiv.org/list/cond-mat.supr-con/recent'
+		self.strong_corr_url = 'http://arxiv.org/list/cond-mat.str-el/recent'
+		self.prl_url = 'http://journals.aps.org/prl/'
+		#pre-urls
+		self.headers = {'User-Agent':'Richard Liu/hf31023@gmail.com'}
+	#get abstracts from arxiv, realized by requests+bs4#
+	def arxiv_downloader(self, original_url):
+		#pre-define dicts used to store data
+		data = {}
+		arxiv_url = 'http://arxiv.org/'
+		#this is the order in the dict
+		data['title'],data['authors'],data['abstract'],data['link'] = [],[],[],[]
+		#this part finds urls of newly posted articles
+		res = requests.get(original_url, headers = self.headers)
+		s = BeautifulSoup(res.text,'lxml')
+		#now = time.strftime('%a, %d %b %Y')
+		temp = s.find_all('h3')
+		cont = temp[0].next_sibling.next_sibling
+		abs_list = cont.find_all('a',{'title':'Abstract'})
+		links = []
+		for i in range(len(abs_list)):
+			links.append(abs_list[i]['href'])
+		links = [urljoin(arxiv_url, t) for t in links]
+		#next block deals with each link and return actual data
+		for link in links:
+			response = requests.get(link, headers = self.headers)
+			soup = BeautifulSoup(response.text,'lxml')
+			data['link'].append(link)
+			#find authors
+			temp_author = soup.find_all('div',{'class':'authors'})
+			authors = temp_author[0].get_text()
+			data['authors'].append(authors)
+			#find titles
+			temp_title = soup.find_all('h1',{'class':'title mathjax'})
+			title = temp_title[0].get_text()
+			data['title'].append(title)
+			#find abstracts
+			temp_abs = soup.find_all('blockquote',{'class':'abstract mathjax'})
+			abstract = temp_abs[0].get_text()
+			data['abstract'].append(abstract)
+			#time.sleep(1)
+		for item in data:
+			for i, ix in enumerate(data[item]):
+				data[item][i] = ix.replace('\n', ' ')
+		return data
+
+	def prl_downloader(self):
+		#this part defines dict
+		data = {}
+		data['title'],data['authors'],data['abstract'],data['link'] = [],[],[],[]
+		
+		aps_url = 'http://journals.aps.org'
+		self.driver.get(self.prl_url)
+		s = BeautifulSoup(self.driver.page_source,'lxml')
+		#find links for current issue page
+		current = s.find_all('a',{'class':'expand button'})
+		next_link = current[0]['href'] 
+		current_issue = urljoin(aps_url,next_link)
+		#find list of urls for current issues
+		res = requests.get(current_issue, headers = self.headers)
+		soup = BeautifulSoup(res.text,'lxml')
+		temp_content = soup.find_all('h4',{'id':"sect-letters-condensed-matter-electronic-properties-etc"})
+		content = temp_content[0].next_sibling
+		r = re.compile(r'/prl/abstract/\d{2}.\d{4}/PhysRevLett.\d{3}.\d{6}$')  
+		t = content.find_all('a',href = r)
+		links = []
+		for item in t:
+			links.append(item['href'])
+		links = [urljoin(aps_url, k) for k in links]
+		try: 
+			f = open('prl_links.txt','r')
+			old_link = []
+			old_link = f.readlines()
+			old_link = [k[:-1] for k in old_link]
+			f.close()
+		except:
+			pass
+
+		#this part get actual data
+		f = open('prl_links.txt','a')
+		for link in links:
+			if link not in old_link:
+				self.driver.get(link)
+				soup_link = BeautifulSoup(self.driver.page_source,'lxml')
+				data['link'].append(link)
+				data['title'].append(self.driver.title)
+				content = self.driver.find_element_by_class_name('content').text
+				author = self.driver.find_element_by_class_name('authors').text
+				data['authors'].append(author)
+				data['abstract'].append(content)
+				f.write(link+'\n')
+				#time.sleep(1)
+		f.close()
+		for item in data:
+			for i, ix in enumerate(data[item]):
+				data[item][i] = ix.replace('\n', ' ')
+		return data
+
+if __name__ == '__main__':
+	boost = AbstractDownloader()
+	superc = boost.arxiv_downloader(boost.superconduct_url)
+	strongc = boost.arxiv_downloader(boost.strong_corr_url)
+	prl = boost.prl_downloader()
+	def para(x, name):
+		paragraphs = ['\section{'+name+'}\n']
+		for ix in range(len(x['title'])):
+			paragraphs.append('\subsection{'+x['title'][ix]+'}\n')
+			paragraphs.append('\\textbf{\\textit{'+x['authors'][ix]+'}}\\newline\n\\newline\n')
+			paragraphs.append(x['abstract'][ix]+'\\newline\n')
+			paragraphs.append('\\href{'+x['link'][ix]+'}{'+x['link'][ix]+'}\n')
+		return paragraphs
+	dt = date.today()
+
+	paragraphs = ['\\documentclass[a4paper,10pt]{article}\n\\linespread{1}\n'+"\\usepackage{hyperref}\n" + '\\title{\\textbf{Newly Added Abstracts}}\n'+'\\date{'+dt.strftime("%A, %d. %b %Y")+'}\n'+'\\author{Richard Liu\\\\\\\\\\\\\nFulfilled by \\\\Python\n}']
+	paragraphs = paragraphs + ['\\begin{document}\n'+'\\maketitle\n'+'\\newpage\n'] + para(prl, 'PRL') + para(superc, 'Superconductivity')+para(strongc,' Strongly-correlated') + ['\\end{document}']
+	with open('content.txt','w') as fb:
+		for ix in paragraphs:
+			fb.write(ix)
+	fb.close
